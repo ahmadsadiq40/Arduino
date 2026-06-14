@@ -1,12 +1,22 @@
 #include <SPI.h>
-#include <DMD2.h>
+#include <DMD_STM32.h>          
 #include <fonts/Arial14.h>
 #include <fonts/SystemFont5x7.h>
 
-// ── P10 ────────────────────────────────────────────────────────
-SoftDMD dmd(1, 1);
+// ── P10 Pin Configuration (STM32F103C8) ────────────────────────
+// Ye pins aapne assign kiye hain
+#define PIN_DMD_OE    PA11  
+#define PIN_DMD_A     PA12  
+#define PIN_DMD_B     PB3   // Needs Debug Disable
+#define PIN_DMD_CLK   PB4   // Needs Debug Disable
+#define PIN_DMD_SCLK  PA15  // Needs Debug Disable
+#define PIN_DMD_DATA  PB5   
 
-// ── 7-Segment (STM32F103) ────────────────────────────────
+// DMD Object
+// Format: DMD(width, height, OE, A, B, SCLK, CLK, DATA);
+DMD dmd(1, 1, PIN_DMD_OE, PIN_DMD_A, PIN_DMD_B, PIN_DMD_SCLK, PIN_DMD_CLK, PIN_DMD_DATA);
+
+// ── 7-Segment Pins ─────────────────────────────────────────
 const int segA  = PA7;
 const int segB  = PA6;
 const int segC  = PA5;
@@ -16,19 +26,19 @@ const int segF  = PA2;
 const int segG  = PA0;
 const int segDP = PA1;
 
-// ── Digit Control ─────────────────────────────────────────
+// ── Digit Control Pins ─────────────────────────────────────
 const int digit1 = PB11;
 const int digit2 = PB10;
 const int digit3 = PB1;
 const int digit4 = PB0;
 
-// ── Pins ───────────────────────────────────────────────────────
+// ── Other Pins ─────────────────────────────────────────────
 const int sensorPin  = PA8;
 const int coinPin    = PC15;
 const int tonePin    = PB13;
 const int relayPin   = PA9;
 
-// ── Segment arrays ─────────────────────────────────────────────
+// ── Segment arrays ─────────────────────────────────────────
 int segments[] = {PA7, PA6, PA5, PA4, PA3, PA2, PA0};
 int digitPins[] = {PB11, PB10, PB1, PB0};
 
@@ -45,13 +55,13 @@ bool numbers[10][7] = {
   {1,1,1,1,0,1,1}, // 9
 };
 
-// ── Machine state ──────────────────────────────────────────────
+// ── Machine state ──────────────────────────────────────────
 enum State { IDLE, LAFORZA_BLINK, READY, PLAYING };
 State machineState = IDLE;
 int credits    = 0;
 int totalCoins = 0;
 
-// ── Coin detection (NC mode) ───────────────────────────────────
+// ── Coin detection ─────────────────────────────────────────
 bool          lastCoinState    = HIGH;
 bool          coinArmed        = true;
 unsigned long lastCoinRiseTime = 0;
@@ -59,20 +69,20 @@ const unsigned long COIN_DEBOUNCE  = 1000UL;
 const unsigned long COIN_MIN_PULSE = 25UL;
 const unsigned long COIN_MAX_PULSE = 200UL;
 
-// ── 7seg hardware ──────────────────────────────────────────────
+// ── 7seg hardware ───────────────────────────────────────────
 int           displayNum[4] = {0, 0, 0, 0};
 int           currentDigit  = 0;
 unsigned long lastSwitch    = 0;
 unsigned long startTime     = 0;
 int           highScore     = 0;
 
-// ── Scroll state ───────────────────────────────────────────────
+// ── Scroll state ───────────────────────────────────────────
 int           scrollX      = 32;
 unsigned long lastScroll   = 0;
 const int     SCROLL_SPEED = 60;
 const char*   scrollMsg    = "LAFORZA";
 
-// ── Score animation state ──────────────────────────────────────
+// ── Score animation state ──────────────────────────────────
 bool          animating     = false;
 int           animCurrent   = 0;
 int           animTarget    = 0;
@@ -85,10 +95,10 @@ unsigned long lastBlink     = 0;
 bool          blinking      = false;
 const unsigned long HOLD_DURATION = 6000UL;
 
-// ── Tone state ─────────────────────────────────────────────────
+// ── Tone state ─────────────────────────────────────────────
 unsigned long lastClick = 0;
 
-// ── READY blink + relay state ──────────────────────────────────
+// ── READY blink + relay state ──────────────────────────────
 int           lfBlinkCount    = 0;
 bool          lfVisible       = true;
 unsigned long lfLastBlink     = 0;
@@ -106,29 +116,30 @@ const unsigned long RELAY_ON_MS  = 1000UL;
 const unsigned long RELAY_GAP_MS = 250UL;
 
 // ══════════════════════════════════════════════════════════════
-//  7-SEG HARDWARE
+//  7-SEG MULTIPLEXING (Non-Blocking)
 // ══════════════════════════════════════════════════════════════
 void showDigit(int index, int number) {
-
-  // disable all digits (CA = HIGH OFF)
+  // 1. Pehle sab digits OFF karein (Common Anode = HIGH for OFF)
   for (int i = 0; i < 4; i++) {
     digitalWrite(digitPins[i], HIGH);
   }
 
-  // set segments (CA = HIGH ON)
+  // 2. Segments set karein
   for (int i = 0; i < 7; i++) {
-    digitalWrite(segments[i], numbers[number][i] ? HIGH : LOW);
+    // Common Anode: Segment ON = LOW
+    digitalWrite(segments[i], numbers[number][i] ? LOW : HIGH);
   }
+  
+  // Decimal Point OFF
+  digitalWrite(segDP, HIGH);
 
-  // decimal point OFF (CA = LOW means OFF or ON depends wiring)
-  digitalWrite(segDP, LOW);
-
-  // enable selected digit (CA = LOW ON)
+  // 3. Sirf required digit ON karein (Common Anode = LOW for ON)
   digitalWrite(digitPins[index], LOW);
 }
 
 void refreshDisplay() {
-  if (micros() - lastSwitch >= 2500) {
+  // Har 2ms par digit switch karein (Non-blocking)
+  if (micros() - lastSwitch >= 2000) {
     showDigit(currentDigit, displayNum[currentDigit]);
     currentDigit = (currentDigit + 1) % 4;
     lastSwitch = micros();
@@ -194,7 +205,7 @@ void drawLaforza() {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  Coin sound
+//  Sounds
 // ══════════════════════════════════════════════════════════════
 void playCoinSound() {
   for (int f = 400; f <= 1200; f += 80) {
@@ -204,9 +215,6 @@ void playCoinSound() {
   noTone(tonePin);
 }
 
-// ══════════════════════════════════════════════════════════════
-//  Score land sound
-// ══════════════════════════════════════════════════════════════
 void playScoreLandSound() {
   for (int f = 900; f >= 200; f -= 70) {
     tone(tonePin, f, 15);
@@ -240,16 +248,13 @@ void scrollLaforza() {
 void tickClick(int current, int target) {
   int freq = map(current, 0, target, 200, 1200);
   freq = constrain(freq, 200, 1200);
-
   int remaining = target - current;
   unsigned long clickInterval;
   if (remaining > 20)
     clickInterval = map(remaining, 20, target, 120, 30);
   else
     clickInterval = map(remaining, 0, 20, 400, 120);
-
   clickInterval = constrain(clickInterval, 30, 400);
-
   if (millis() - lastClick >= clickInterval) {
     tone(tonePin, freq, 20);
     lastClick = millis();
@@ -410,7 +415,7 @@ void startNewGame() {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  Coin check — NC mode, no counter pin
+//  Coin check — NC mode
 // ══════════════════════════════════════════════════════════════
 void checkCoin() {
   bool coinState = digitalRead(coinPin);
@@ -425,6 +430,7 @@ void checkCoin() {
       unsigned long pulseStart = millis();
       while (digitalRead(coinPin) == LOW &&
              millis() - pulseStart < COIN_MAX_PULSE) {
+        // Wait for pulse end
       }
       unsigned long pulseLength = millis() - pulseStart;
 
@@ -448,12 +454,11 @@ void checkCoin() {
       }
     }
   }
-
   lastCoinState = coinState;
 }
 
 // ══════════════════════════════════════════════════════════════
-//  Score calculate — 4x harder
+//  Score calculate
 // ══════════════════════════════════════════════════════════════
 int calculateScore(unsigned long timeUS) {
   if (timeUS <= 2000)  return 1000;
@@ -466,19 +471,28 @@ int calculateScore(unsigned long timeUS) {
 // ══════════════════════════════════════════════════════════════
 void setup() {
   Serial.begin(250000);
+  
+  // 7-Segment Pins Setup
   for (int i = 0; i < 7; i++) pinMode(segments[i], OUTPUT);
   pinMode(segDP, OUTPUT);
   for (int i = 0; i < 4; i++) {
     pinMode(digitPins[i], OUTPUT);
-    digitalWrite(digitPins[i], LOW);
+    digitalWrite(digitPins[i], HIGH); // Common Anide OFF
   }
+  
+  // Other Pins
   pinMode(sensorPin,  INPUT);
   pinMode(coinPin,    INPUT_PULLUP);
   pinMode(tonePin,    OUTPUT);
   pinMode(relayPin,   OUTPUT);
   digitalWrite(relayPin, HIGH);
-
-  dmd.begin();
+  
+  // IMPORTANT: Disable Debug ports to use PB3, PB4, PA15 as GPIO
+  disableDebugPorts(); 
+  
+  // DMD Setup
+  dmd.selectFont(SystemFont5x7); 
+  dmd.begin();                   
   SPI.setClockDivider(SPI_CLOCK_DIV32);
 
   dmd.clearScreen();
@@ -490,7 +504,7 @@ void setup() {
 //  LOOP
 // ══════════════════════════════════════════════════════════════
 void loop() {
-  refreshDisplay();
+  refreshDisplay(); // Always refresh 7-segment
   checkCoin();
 
   switch (machineState) {
@@ -506,7 +520,7 @@ void loop() {
     case READY:
       if (digitalRead(sensorPin) == HIGH) {
         startTime = micros();
-        while (digitalRead(sensorPin) == HIGH) refreshDisplay();
+        while (digitalRead(sensorPin) == HIGH) refreshDisplay(); // Keep refreshing while waiting
         unsigned long elapsed = micros() - startTime;
         int score = calculateScore(elapsed);
         Serial.print("Score: "); Serial.println(score);
